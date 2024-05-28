@@ -43,7 +43,7 @@ class Mamba(nn.Module):
         dt_init_floor=1e-4,
         conv_bias=True,
         bias=False,
-        softplus=True,
+        squareplus=True,
         use_fast_path=True,  # Fused kernel options
         layer_idx=None,
         device=None,
@@ -90,7 +90,7 @@ class Mamba(nn.Module):
             raise NotImplementedError
 
         # Initialize dt bias so that F.softplus(dt_bias) is between dt_min and dt_max
-        self.softplus = softplus
+        self.squareplus= squareplus
         dt = torch.exp(
             torch.rand(self.d_inner, **factory_kwargs) * (math.log(dt_max) - math.log(dt_min))
             + math.log(dt_min)
@@ -158,8 +158,7 @@ class Mamba(nn.Module):
                 None,  # input-dependent C
                 self.D.float(),
                 delta_bias=self.dt_proj.bias.float(),
-                delta_softplus=self.softplus,
-                delta_squareplus=not self.softplus,
+                delta_squareplus=self.squareplus,
             )
         else:
             x, z = xz.chunk(2, dim=1)
@@ -198,8 +197,7 @@ class Mamba(nn.Module):
                 self.D.float(),
                 z=z,
                 delta_bias=self.dt_proj.bias.float(),
-                delta_softplus=self.softplus,
-                delta_squareplus=not self.softplus,
+                delta_squareplus=self.squareplus,
                 return_last_state=ssm_state is not None,
             )
             if ssm_state is not None:
@@ -241,9 +239,7 @@ class Mamba(nn.Module):
         # SSM step
         if selective_state_update is None:
             # Discretize A and B
-            if self.softplus:
-                dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))
-            else:
+            if self.squareplus:
                 dt += self.dt_proj.bias.to(dtype=dt.dtype)
                 dt = (dt + torch.sqrt(torch.square(dt) + 4)) / 2
             dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))
@@ -254,7 +250,7 @@ class Mamba(nn.Module):
             y = y * self.act(z)  # (B D)
         else:
             y = selective_state_update(
-                ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_softplus=self.softplus, dt_squareplus=not self.softplus
+                ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_squareplus=self.squareplus
             )
 
         out = self.out_proj(y)

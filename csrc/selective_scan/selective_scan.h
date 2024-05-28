@@ -6,7 +6,8 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct SSMScanParamsBase {
+struct SSMScanParamsBase
+{
     using index_t = uint32_t;
 
     int batch, seqlen, n_chunks;
@@ -23,7 +24,8 @@ struct SSMScanParamsBase {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct SSMParamsBase {
+struct SSMParamsBase
+{
     using index_t = uint32_t;
 
     int batch, dim, seqlen, dstate, n_groups, n_chunks;
@@ -31,7 +33,6 @@ struct SSMParamsBase {
     bool is_variable_B;
     bool is_variable_C;
 
-    bool delta_softplus;
     bool delta_squareplus;
 
     index_t A_d_stride;
@@ -69,7 +70,8 @@ struct SSMParamsBase {
     void *__restrict__ out_z_ptr;
 };
 
-struct SSMParamsBwd: public SSMParamsBase {
+struct SSMParamsBwd : public SSMParamsBase
+{
     index_t dout_batch_stride;
     index_t dout_d_stride;
     index_t dA_d_stride;

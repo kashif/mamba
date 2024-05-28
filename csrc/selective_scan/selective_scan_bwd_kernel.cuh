@@ -24,7 +24,7 @@ template<> __device__ __forceinline__ float conj<float>(float x) { return x; }
 template<> __device__ __forceinline__ complex_t conj<complex_t>(complex_t x) { return std::conj(x); }
 
 template<int kNThreads_, int kNItems_, bool kIsEvenLen_, bool kIsVariableB_, bool kIsVariableC_,
-         bool kDeltaSoftplus_, bool kDeltaSquareplus_, bool kHasZ_, typename input_t_, typename weight_t_>
+        bool kDeltaSquareplus_, bool kHasZ_, typename input_t_, typename weight_t_>
 struct Selective_Scan_bwd_kernel_traits {
     static_assert(kNItems_ % 4 == 0);
     using input_t = input_t_;
@@ -40,7 +40,6 @@ struct Selective_Scan_bwd_kernel_traits {
     static constexpr bool kIsEvenLen = kIsEvenLen_;
     static constexpr bool kIsVariableB = kIsVariableB_;
     static constexpr bool kIsVariableC = kIsVariableC_;
-    static constexpr bool kDeltaSoftplus = kDeltaSoftplus_;
     static constexpr bool kDeltaSquareplus = kDeltaSquareplus_;
     static constexpr bool kHasZ = kHasZ_;
     // Setting MinBlocksPerMP to be 3 (instead of 2) for 128 threads with float improves occupancy.
@@ -79,7 +78,6 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
     constexpr bool kIsComplex = Ktraits::kIsComplex;
     constexpr bool kIsVariableB = Ktraits::kIsVariableB;
     constexpr bool kIsVariableC = Ktraits::kIsVariableC;
-    constexpr bool kDeltaSoftplus = Ktraits::kDeltaSoftplus;
     constexpr bool kDeltaSquareplus = Ktraits::kDeltaSquareplus;
     constexpr bool kHasZ = Ktraits::kHasZ;
     constexpr int kNThreads = Ktraits::kNThreads;
@@ -155,7 +153,7 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
         __syncthreads();
         load_input<Ktraits>(delta, delta_vals_load, smem_load, params.seqlen - chunk * kChunkSize);
         // Will reload delta at the same location if kDeltaSoftplus or kDeltaSquarePlus is true
-        if constexpr (!kDeltaSoftplus) { delta -= kChunkSize; } else if constexpr (!kDeltaSquareplus) { delta -= kChunkSize; }
+        if constexpr (!kDeltaSquareplus) { delta -= kChunkSize; }
         __syncthreads();
         load_input<Ktraits>(dout, dout_vals_load, smem_load, params.seqlen - chunk * kChunkSize);
         dout -= kChunkSize;
@@ -165,9 +163,7 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
         for (int i = 0; i < kNItems; ++i) {
             dout_vals[i] = float(dout_vals_load[i]);
             delta_vals[i] = float(delta_vals_load[i]) + delta_bias;
-            if constexpr (kDeltaSoftplus) {
-                delta_vals[i] = delta_vals[i] <= 20.f ? log1pf(expf(delta_vals[i])) : delta_vals[i];
-            } else if constexpr (kDeltaSquareplus) {
+            if constexpr (kDeltaSquareplus) {
                 delta_vals[i] = (delta_vals[i] + sqrtf(delta_vals[i] * delta_vals[i] + 4.0)) / 2.0;
             }
         }
@@ -440,20 +436,7 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
             }
         }
 
-        if constexpr (kDeltaSoftplus) {
-            __syncthreads();
-            input_t delta_vals_load[kNItems];
-            load_input<Ktraits>(delta, delta_vals_load, smem_load, params.seqlen - chunk * kChunkSize);
-            delta -= kChunkSize;
-            #pragma unroll
-            for (int i = 0; i < kNItems; ++i) {
-                float delta_val = float(delta_vals_load[i]) + delta_bias;
-                float delta_val_neg_exp = expf(-delta_val);
-                ddelta_vals[i] = delta_val <= 20.f
-                    ? ddelta_vals[i] / (1.f + delta_val_neg_exp)
-                    : ddelta_vals[i];
-            }
-        } else if constexpr (kDeltaSquareplus) {
+        if constexpr (kDeltaSquareplus) {
             __syncthreads();
             input_t delta_vals_load[kNItems];
             load_input<Ktraits>(delta, delta_vals_load, smem_load, params.seqlen - chunk * kChunkSize);
@@ -508,23 +491,21 @@ void selective_scan_bwd_launch(SSMParamsBwd &params, cudaStream_t stream) {
     BOOL_SWITCH(params.seqlen % (kNThreads * kNItems) == 0, kIsEvenLen, [&] {
         BOOL_SWITCH(params.is_variable_B, kIsVariableB, [&] {
             BOOL_SWITCH(params.is_variable_C, kIsVariableC, [&] {
-                BOOL_SWITCH(params.delta_softplus, kDeltaSoftplus, [&] {
-                    BOOL_SWITCH(params.delta_squareplus, kDeltaSquareplus, [&] {
-                        BOOL_SWITCH(params.z_ptr != nullptr , kHasZ, [&] {
-                            using Ktraits = Selective_Scan_bwd_kernel_traits<kNThreads, kNItems, kIsEvenLen, kIsVariableB, kIsVariableC, kDeltaSoftplus, kDeltaSquareplus, kHasZ, input_t, weight_t>;
-                            // using Ktraits = Selective_Scan_bwd_kernel_traits<kNThreads, kNItems, true, kIsVariableB, kIsVariableC, kDeltaSoftplus, kDeltaSquareplus, kHasZ, input_t, weight_t>;
-                            // TODO: check this
-                            constexpr int kSmemSize = Ktraits::kSmemSize + MAX_DSTATE * sizeof(typename Ktraits::scan_t) + (kNThreads + 4 * MAX_DSTATE) * sizeof(typename Ktraits::weight_t);
-                            // printf("smem_size = %d\n", kSmemSize);
-                            dim3 grid(params.batch, params.dim);
-                            auto kernel = &selective_scan_bwd_kernel<Ktraits>;
-                            if (kSmemSize >= 48 * 1024) {
-                                C10_CUDA_CHECK(cudaFuncSetAttribute(
-                                    kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
-                            }
-                            kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
-                            C10_CUDA_KERNEL_LAUNCH_CHECK();
-                        });
+                BOOL_SWITCH(params.delta_squareplus, kDeltaSquareplus, [&] {
+                    BOOL_SWITCH(params.z_ptr != nullptr , kHasZ, [&] {
+                        using Ktraits = Selective_Scan_bwd_kernel_traits<kNThreads, kNItems, kIsEvenLen, kIsVariableB, kIsVariableC, kDeltaSquareplus, kHasZ, input_t, weight_t>;
+                        // using Ktraits = Selective_Scan_bwd_kernel_traits<kNThreads, kNItems, true, kIsVariableB, kIsVariableC, kDeltaSquareplus, kHasZ, input_t, weight_t>;
+                        // TODO: check this
+                        constexpr int kSmemSize = Ktraits::kSmemSize + MAX_DSTATE * sizeof(typename Ktraits::scan_t) + (kNThreads + 4 * MAX_DSTATE) * sizeof(typename Ktraits::weight_t);
+                        // printf("smem_size = %d\n", kSmemSize);
+                        dim3 grid(params.batch, params.dim);
+                        auto kernel = &selective_scan_bwd_kernel<Ktraits>;
+                        if (kSmemSize >= 48 * 1024) {
+                            C10_CUDA_CHECK(cudaFuncSetAttribute(
+                                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                        }
+                        kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
+                        C10_CUDA_KERNEL_LAUNCH_CHECK();
                     });
                 });
             });

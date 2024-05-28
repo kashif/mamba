@@ -94,14 +94,14 @@ def test_selective_scan(is_variable_B, is_variable_C, varBC_groups, has_D, has_z
     delta_bias_ref = delta_bias.detach().clone().requires_grad_() if delta_bias is not None else None
     out, *rest = selective_scan_fn(
         u, delta, A, B, C, D, z=z,
-        delta_bias=delta_bias, delta_softplus=delta_softplus, delta_squareplus=not delta_softplus,
+        delta_bias=delta_bias, delta_squareplus=not delta_softplus,
         return_last_state=return_last_state
     )
     if return_last_state:
         state = rest[0]
     out_ref, *rest = selective_scan_ref(
         u_ref, delta_ref, A_ref, B_ref, C_ref, D_ref, z=z_ref,
-        delta_bias=delta_bias_ref, delta_softplus=delta_softplus, delta_squareplus=not delta_softplus,
+        delta_bias=delta_bias_ref, delta_squareplus=not delta_softplus,
         return_last_state=return_last_state
     )
     if return_last_state:
@@ -208,18 +208,23 @@ def test_mamba_inner_fn(is_variable_B, is_variable_C, seqlen, itype, wtype, delt
     out = mamba_inner_fn(xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                          out_proj_weight, out_proj_bias,
                          A, B, C, D, delta_bias=delta_bias, 
-                         delta_softplus=delta_softplus, delta_squareplus=not delta_softplus)
+                         delta_squareplus=not delta_softplus)
     out_ref = mamba_inner_ref(xz_ref, conv1d_weight_ref, conv1d_bias_ref, x_proj_weight_ref,
                               delta_proj_weight_ref, out_proj_weight_ref, out_proj_bias_ref,
                               A_ref, B_ref, C_ref, D_ref,
-                              delta_bias=delta_bias_ref, delta_softplus=delta_softplus, 
+                              delta_bias=delta_bias_ref,
                               delta_squareplus=not delta_softplus)
     # dA = torch.exp(torch.einsum('bdl,dn->bdln', delta, A))
     # dt_u = delta * u
 
     print(f'Output max diff: {(out - out_ref).abs().max().item()}')
     print(f'Output mean diff: {(out - out_ref).abs().mean().item()}')
-    assert torch.allclose(out, out_ref, rtol=rtol, atol=atol)
+
+    try:
+        assert torch.allclose(out, out_ref, rtol=rtol, atol=atol)
+    except:
+        import pdb
+        pdb.set_trace()
 
     g = torch.randn_like(out)
     out_ref.backward(g)
